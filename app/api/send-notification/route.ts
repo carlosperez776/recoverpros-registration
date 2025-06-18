@@ -46,17 +46,21 @@ export async function POST(request: NextRequest) {
 
     // Continue with regular email logic...
     const body = await request.json()
-    const { customerData, imageCount, caseId, images } = body
+    const { customerData, imageCount, caseId, images, batchInfo, isFirstBatch, totalBatches, currentBatch } = body
 
     console.log("Request data:", {
       caseId,
-      customerName: `${customerData.firstName} ${customerData.lastName}`,
+      customerName: customerData ? `${customerData.firstName} ${customerData.lastName}` : "Batch email",
       imageCount,
       hasImages: images && images.length > 0,
+      batchInfo,
+      isFirstBatch,
+      totalBatches,
+      currentBatch,
     })
 
     // Validate required data
-    if (!customerData || !caseId) {
+    if (!caseId) {
       console.error("Missing required data")
       return NextResponse.json({ error: "Missing required data" }, { status: 400 })
     }
@@ -65,6 +69,12 @@ export async function POST(request: NextRequest) {
     if (!process.env.RESEND_API_KEY) {
       console.error("RESEND_API_KEY is not configured")
       return NextResponse.json({ error: "Email service not configured" }, { status: 500 })
+    }
+
+    // Create subject line
+    let subject = `🚨 FORWARD TO TEAM: New ${customerData?.serviceType?.toUpperCase() || "Service"} Customer - ${caseId}`
+    if (batchInfo) {
+      subject += ` ${batchInfo}`
     }
 
     const emailContent = `
@@ -81,9 +91,28 @@ export async function POST(request: NextRequest) {
         </div>
         
         <h2 style="color: #DAA520; border-bottom: 2px solid #DAA520; padding-bottom: 10px; text-align: center;">
-          🚨 NEW CUSTOMER REGISTRATION
+          🚨 NEW CUSTOMER REGISTRATION${batchInfo || ""}
         </h2>
+
+        ${
+          totalBatches > 1
+            ? `
+        <div style="background-color: #1a1a1a; padding: 15px; border-radius: 8px; margin: 20px 0; border: 2px solid #DAA520;">
+          <h3 style="color: #DAA520; margin-top: 0; text-align: center;">📧 MULTIPLE EMAIL NOTICE</h3>
+          <p style="text-align: center; margin: 10px 0; color: #fff;">
+            This customer uploaded ${imageCount} photos. Due to email size limits, photos are being sent in ${totalBatches} separate emails.
+          </p>
+          <p style="text-align: center; margin: 10px 0; color: #DAA520; font-weight: bold;">
+            This is email ${currentBatch} of ${totalBatches}
+          </p>
+        </div>
+        `
+            : ""
+        }
         
+        ${
+          isFirstBatch && customerData
+            ? `
         <div style="background-color: #1a1a1a; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #DAA520;">
           <h3 style="color: #DAA520; margin-top: 0; font-size: 18px;">📋 CASE DETAILS</h3>
           <p style="font-size: 16px; margin: 10px 0;"><strong>Case ID:</strong> <span style="color: #DAA520;">${caseId}</span></p>
@@ -93,6 +122,7 @@ export async function POST(request: NextRequest) {
             </span>
           </p>
           <p style="font-size: 14px; margin: 10px 0;"><strong>Submitted:</strong> ${new Date().toLocaleString()}</p>
+          <p style="font-size: 14px; margin: 10px 0;"><strong>Total Photos:</strong> ${imageCount} images</p>
         </div>
         
         <div style="background-color: #1a1a1a; padding: 20px; border-radius: 8px; margin: 20px 0;">
@@ -125,20 +155,30 @@ export async function POST(request: NextRequest) {
         `
             : ""
         }
+        `
+            : `
+        <div style="background-color: #1a1a1a; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #DAA520;">
+          <h3 style="color: #DAA520; margin-top: 0; font-size: 18px;">📋 ADDITIONAL PHOTOS</h3>
+          <p style="font-size: 16px; margin: 10px 0;"><strong>Case ID:</strong> <span style="color: #DAA520;">${caseId}</span></p>
+          <p style="font-size: 14px; margin: 10px 0;">This email contains additional photos for the above case.</p>
+        </div>
+        `
+        }
 
         <div style="background-color: #DAA520; color: #000; padding: 20px; border-radius: 8px; margin: 20px 0; text-align: center;">
-          <h3 style="margin-top: 0; font-size: 18px;">📸 PHOTOS UPLOADED</h3>
+          <h3 style="margin-top: 0; font-size: 18px;">📸 PHOTOS IN THIS EMAIL</h3>
           <p style="font-size: 24px; font-weight: bold; margin: 10px 0;">
-            ${imageCount || 0} Images
+            ${images?.length || 0} Images
           </p>
           <p style="margin: 0; font-size: 14px;">High-quality photos embedded below - right-click to save</p>
+          ${totalBatches > 1 ? `<p style="margin: 5px 0; font-size: 12px;">Email ${currentBatch} of ${totalBatches} • Total: ${imageCount} photos</p>` : ""}
         </div>
 
         ${
           images && images.length > 0
             ? `
 <div style="background-color: #1a1a1a; padding: 20px; border-radius: 8px; margin: 20px 0;">
-  <h3 style="color: #DAA520; margin-top: 0; text-align: center;">📷 DAMAGE PHOTOS</h3>
+  <h3 style="color: #DAA520; margin-top: 0; text-align: center;">📷 DAMAGE PHOTOS${batchInfo ? ` ${batchInfo}` : ""}</h3>
   <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; margin-top: 20px;">
     ${images
       .map(
@@ -146,7 +186,7 @@ export async function POST(request: NextRequest) {
       <div style="border: 2px solid #DAA520; border-radius: 8px; overflow: hidden; background-color: #000;">
         <img src="${image.url}" alt="Damage Photo ${index + 1}" style="width: 100%; height: auto; max-height: 500px; object-fit: contain; display: block;" />
         <div style="padding: 15px; text-align: center; background-color: #DAA520; color: #000;">
-          <p style="margin: 0; font-size: 16px; font-weight: bold;">Photo ${index + 1}</p>
+          <p style="margin: 0; font-size: 16px; font-weight: bold;">Photo ${index + 1}${batchInfo ? ` ${batchInfo}` : ""}</p>
           <p style="margin: 5px 0 0 0; font-size: 14px;">${image.name || `Image_${index + 1}`}</p>
           <p style="margin: 5px 0 0 0; font-size: 12px;">Size: ${Math.round(image.size / 1024)} KB</p>
           <p style="margin: 8px 0 0 0; font-size: 12px; font-style: italic;">Right-click image → "Save image as..." to download</p>
@@ -189,6 +229,7 @@ export async function POST(request: NextRequest) {
           <p style="margin: 5px 0;">Case ID: ${caseId}</p>
           <p style="margin: 5px 0; color: #DAA520;"><strong>Forward to: info@recoverpros.us</strong></p>
           <p style="margin: 5px 0; color: #666;">Sent at: ${new Date().toISOString()}</p>
+          ${totalBatches > 1 ? `<p style="margin: 5px 0; color: #DAA520;">Email ${currentBatch} of ${totalBatches}</p>` : ""}
         </div>
       </div>
     `
@@ -198,7 +239,7 @@ export async function POST(request: NextRequest) {
     const { data, error } = await resend.emails.send({
       from: "RecoverPros Registration <onboarding@resend.dev>",
       to: ["carlosperez776@hotmail.com"],
-      subject: `🚨 FORWARD TO TEAM: New ${customerData.serviceType?.toUpperCase() || "Service"} Customer - ${caseId}`,
+      subject: subject,
       html: emailContent,
     })
 
@@ -222,6 +263,7 @@ export async function POST(request: NextRequest) {
       messageId: data?.id,
       timestamp: new Date().toISOString(),
       recipient: "carlosperez776@hotmail.com",
+      batchInfo: batchInfo || "single email",
     })
   } catch (error) {
     console.error("❌ Error in send-notification API:", error)
