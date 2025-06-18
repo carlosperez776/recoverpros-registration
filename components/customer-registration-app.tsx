@@ -36,8 +36,8 @@ export default function CustomerRegistrationApp() {
     setCustomerData((prev) => ({ ...prev, [field]: value }))
   }
 
-  // Function to compress images for email
-  const compressImage = (file, maxWidth = 800, quality = 0.8) => {
+  // Function to compress images more aggressively for large batches
+  const compressImage = (file, maxWidth = 600, quality = 0.6) => {
     return new Promise((resolve) => {
       const canvas = document.createElement("canvas")
       const ctx = canvas.getContext("2d")
@@ -61,6 +61,21 @@ export default function CustomerRegistrationApp() {
 
   const handleImageUpload = async (event) => {
     const files = Array.from(event.target.files)
+
+    // Check total number of images
+    if (uploadedImages.length + files.length > 50) {
+      setSubmitError(`You can upload a maximum of 50 photos. You currently have ${uploadedImages.length} photos.`)
+      return
+    }
+
+    // Check individual file sizes
+    const oversizedFiles = files.filter((file) => file.size > 10 * 1024 * 1024) // 10MB limit
+    if (oversizedFiles.length > 0) {
+      setSubmitError(`Some files are too large. Please use images smaller than 10MB each.`)
+      return
+    }
+
+    setSubmitError("") // Clear any previous errors
 
     for (const file of files) {
       if (file.type.startsWith("image/")) {
@@ -88,41 +103,71 @@ export default function CustomerRegistrationApp() {
     setUploadedImages((prev) => prev.filter((img) => img.id !== imageId))
   }
 
-  const sendNotificationEmail = async () => {
+  // Send emails in batches to avoid payload limits
+  const sendNotificationEmails = async () => {
     try {
-      console.log("Sending notification email...")
+      console.log("Sending notification emails...")
 
-      // Prepare images for email
-      const emailImages = uploadedImages.map((img) => ({
-        url: img.url, // Compressed image
-        name: img.name,
-        size: img.size,
-      }))
+      const batchSize = 10 // Send max 10 photos per email
+      const batches = []
 
-      const response = await fetch("/api/send-notification", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          customerData,
-          imageCount: uploadedImages.length,
-          caseId,
-          images: emailImages,
-        }),
-      })
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        console.error("Server response:", errorText)
-        throw new Error(`Server error: ${response.status} ${response.statusText}`)
+      // Split images into batches
+      for (let i = 0; i < uploadedImages.length; i += batchSize) {
+        batches.push(uploadedImages.slice(i, i + batchSize))
       }
 
-      const result = await response.json()
-      console.log("Email sent successfully:", result.messageId)
+      // If no images, send one email with customer data only
+      if (batches.length === 0) {
+        batches.push([])
+      }
+
+      // Send each batch
+      for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+        const batch = batches[batchIndex]
+        const emailImages = batch.map((img) => ({
+          url: img.url,
+          name: img.name,
+          size: img.size,
+        }))
+
+        const isFirstBatch = batchIndex === 0
+        const batchInfo = batches.length > 1 ? ` (Batch ${batchIndex + 1} of ${batches.length})` : ""
+
+        const response = await fetch("/api/send-notification", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            customerData: isFirstBatch ? customerData : null, // Only send customer data in first email
+            imageCount: uploadedImages.length,
+            caseId,
+            images: emailImages,
+            batchInfo,
+            isFirstBatch,
+            totalBatches: batches.length,
+            currentBatch: batchIndex + 1,
+          }),
+        })
+
+        if (!response.ok) {
+          const errorText = await response.text()
+          console.error("Server response:", errorText)
+          throw new Error(`Server error: ${response.status} ${response.statusText}`)
+        }
+
+        const result = await response.json()
+        console.log(`Batch ${batchIndex + 1} sent successfully:`, result.messageId)
+
+        // Small delay between batches to avoid rate limits
+        if (batchIndex < batches.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1000))
+        }
+      }
+
       return true
     } catch (error) {
-      console.error("Error sending notification email:", error)
+      console.error("Error sending notification emails:", error)
       throw error
     }
   }
@@ -138,8 +183,8 @@ export default function CustomerRegistrationApp() {
     setSubmitError("")
 
     try {
-      // Send notification email with embedded photos
-      await sendNotificationEmail()
+      // Send notification emails in batches
+      await sendNotificationEmails()
 
       // Simulate form processing
       setTimeout(() => {
@@ -188,8 +233,9 @@ export default function CustomerRegistrationApp() {
                 <div className="text-left">
                   <p className="text-blue-800 font-medium mb-1">📧 Notification Sent</p>
                   <p className="text-blue-700 text-sm">
-                    Email sent to carlosperez776@hotmail.com with all customer information and photos embedded.
-                    RecoverPros will contact you within 24 hours.
+                    {uploadedImages.length > 10
+                      ? `Email sent to carlosperez776@hotmail.com in ${Math.ceil(uploadedImages.length / 10)} separate emails with all photos. RecoverPros will contact you within 24 hours.`
+                      : `Email sent to carlosperez776@hotmail.com with all customer information and photos embedded. RecoverPros will contact you within 24 hours.`}
                   </p>
                 </div>
               </div>
@@ -220,6 +266,17 @@ export default function CustomerRegistrationApp() {
           <p className="text-blue-700 text-sm">
             <strong>Note:</strong> Email notifications will be sent to carlosperez776@hotmail.com and should be
             forwarded to info@recoverpros.us until domain verification is complete.
+          </p>
+        </div>
+      </div>
+
+      {/* Photo Upload Limits Info */}
+      <div className="max-w-6xl mx-auto mb-6">
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 flex items-center gap-3">
+          <Camera className="w-5 h-5 text-yellow-600 flex-shrink-0" />
+          <p className="text-yellow-700 text-sm">
+            <strong>Photo Upload:</strong> You can upload up to 50 photos (max 10MB each). For large batches, photos
+            will be sent in multiple emails to ensure delivery.
           </p>
         </div>
       </div>
@@ -395,7 +452,7 @@ export default function CustomerRegistrationApp() {
               <Camera className="w-5 h-5" />
               Photo Upload
             </CardTitle>
-            <CardDescription>Upload photos of the damage for assessment</CardDescription>
+            <CardDescription>Upload photos of the damage for assessment (up to 50 photos)</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             {/* Upload Area */}
@@ -413,7 +470,7 @@ export default function CustomerRegistrationApp() {
                 <p className="text-lg font-medium text-gray-700 mb-2">Upload Damage Photos</p>
                 <p className="text-sm text-gray-500">Click to select or drag and drop images</p>
                 <p className="text-xs text-gray-400 mt-2">
-                  Supports: JPG, PNG, GIF • Photos will be embedded in email at high quality
+                  Supports: JPG, PNG, GIF • Max 50 photos, 10MB each • Large batches sent in multiple emails
                 </p>
               </label>
             </div>
@@ -421,9 +478,16 @@ export default function CustomerRegistrationApp() {
             {/* Uploaded Images */}
             {uploadedImages.length > 0 && (
               <div>
-                <div className="flex items-center gap-2 mb-3">
-                  <FileImage className="w-4 h-4" />
-                  <span className="font-medium">Uploaded Photos ({uploadedImages.length})</span>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <FileImage className="w-4 h-4" />
+                    <span className="font-medium">Uploaded Photos ({uploadedImages.length}/50)</span>
+                  </div>
+                  {uploadedImages.length > 10 && (
+                    <span className="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded">
+                      Will send in {Math.ceil(uploadedImages.length / 10)} emails
+                    </span>
+                  )}
                 </div>
                 <div className="grid grid-cols-3 gap-2 max-h-80 overflow-y-auto border rounded-lg p-2">
                   {uploadedImages.map((image) => (
@@ -445,9 +509,10 @@ export default function CustomerRegistrationApp() {
                     </div>
                   ))}
                 </div>
-                {uploadedImages.length >= 10 && (
+                {uploadedImages.length >= 20 && (
                   <p className="text-xs text-gray-500 mt-2 text-center">
-                    {uploadedImages.length} photos uploaded. All will be embedded in the email at high quality.
+                    {uploadedImages.length} photos uploaded. Photos will be sent in batches of 10 per email for reliable
+                    delivery.
                   </p>
                 )}
               </div>
